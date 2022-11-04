@@ -26,15 +26,24 @@ mixin template LexStringImpl(Token,
 			popChar();
 
 			auto es = lexEscapeSequence(start);
-			if (es.type == SequenceType.Invalid) {
-				if (frontChar == '\'') {
-					popChar();
-				}
+			if (es.type == SequenceType.Character) {
+				dc = es.decodedChar;
+				goto End;
+			}
 
+			if (frontChar == '\'') {
+				popChar();
+			}
+
+			if (es.type == SequenceType.Invalid) {
 				return getError(es.location, es.error);
 			}
 
-			dc = es.decodedChar;
+			assert(es.type == SequenceType.MultiCodePointHtmlEntity);
+			return getError(
+				start,
+				"This HTML entity requires 2 codepoints, and cannot be encoded in a single character.",
+			);
 		} else {
 			dchar d;
 
@@ -46,6 +55,7 @@ mixin template LexStringImpl(Token,
 			dc = DecodedChar(d);
 		}
 
+	End:
 		c = frontChar;
 		if (c != '\'') {
 			import std.format;
@@ -265,6 +275,35 @@ mixin template LexStringImpl(Token,
 		);
 	}
 
+	EscapeSequence lexHtmlEntity(uint begin) {
+		popChar();
+
+		uint start = index;
+		char c = frontChar;
+
+		import std.ascii;
+		if (!isAlpha(c)) {
+			return getEscapeSequenceError(
+				start, "HTML entities start with an ASCII letter.");
+		}
+
+		do {
+			popChar();
+			c = frontChar;
+		} while (isAlpha(c));
+
+		if (c != ';') {
+			return getEscapeSequenceError(
+				start, "HTML entities terminate with a semicolon.");
+		}
+
+		uint end = popChar();
+
+		import source.htmlentities;
+		return matchHtmlEntity(base.getWithOffsets(begin, index), context,
+		                       content[start .. end]);
+	}
+
 	EscapeSequence lexEscapeSequence(uint begin) {
 		char c = frontChar;
 		switch (c) {
@@ -326,7 +365,7 @@ mixin template LexStringImpl(Token,
 				return lexUnicodeEscapeSequence!'U'(begin);
 
 			case '&':
-				assert(0, "HTML5 named character references not implemented");
+				return lexHtmlEntity(begin);
 
 			default:
 				return
@@ -467,4 +506,27 @@ unittest {
 	                "Expected `'` to end charatcter literal, not '8'.");
 	checkLexInvalid(`'\400'`,
 	                `Escape octal sequence \400 is larger than \377.`);
+
+	// Check HTML entities escape sequences.
+	checkLexString(
+		`"\&lt;\&gt;\&amp;\&nbsp;\&twoheadrightarrow;\&leftrightsquigarrow;"`,
+		"<>&\u00a0↠↭");
+	checkLexString(
+		`"\&ReverseUpEquilibrium;\&CounterClockwiseContourIntegral;"`, "⥯∳");
+	checkLexString(`"\&nlE;\&bne;\&fjlig;\&NotNestedGreaterGreater;"`,
+	               "\u2266\u0338=\u20e5fj\u2aa2\u0338");
+	checkLexChar(`'\&CounterClockwiseContourIntegral;'`, 0x2233);
+
+	checkLexInvalid(`"\&;"`, `HTML entities start with an ASCII letter.`);
+	checkLexInvalid(`"\&amp"`, `HTML entities terminate with a semicolon.`);
+	checkLexInvalid(`"\&a;"`, "`a` is not a valid HTML entity.");
+	checkLexInvalid(`"\&aa;"`, "`aa` is not a valid HTML entity.");
+	checkLexInvalid(`"\&aaaa;"`, "`aaaa` is not a valid HTML entity.");
+	checkLexInvalid(
+		`"\&CounterClockwiseContourIntegrall;"`,
+		"`CounterClockwiseContourIntegrall` is not a valid HTML entity.");
+	checkLexInvalid(
+		`'\&NotNestedGreaterGreater;'`,
+		"This HTML entity requires 2 codepoints, and cannot be encoded in a single character.",
+	);
 }

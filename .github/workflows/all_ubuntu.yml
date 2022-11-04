@@ -8,8 +8,9 @@ jobs:
       matrix:
         os: [ubuntu-latest]
         dc: [dmd-latest]
-
     runs-on: ${{ matrix.os }}
+    env:
+      USE_LOWMEM: 1
     steps:
       - uses: actions/checkout@v2
 
